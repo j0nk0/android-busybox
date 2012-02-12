@@ -39,10 +39,36 @@ int pivot_root(const char *new_root, const char *put_old)
 	return syscall(__NR_pivot_root, new_root, put_old);
 }
 
-# if __ANDROID_API__ < 21
-int tcdrain(int fd)
+int swapon(const char *path, int swapflags)
 {
-	return ioctl(fd, TCSBRK, 1);
+    return syscall(__NR_swapon, path, swapflags);
 }
-# endif
+
+int swapoff(const char *path)
+{
+    return syscall(__NR_swapoff, path);
+}
+
+#if __ANDROID_API__ < 16
+int setxattr(const char *path, const char *name, const void *value, size_t size, int flags)
+{
+    return syscall(__NR_setxattr, path, name, value, size, flags);
+}
+
+int lsetxattr(const char *path, const char *name, const void *value, size_t size, int flags)
+{
+    return syscall(__NR_lsetxattr, path, name, value, size, flags);
+}
+
+int removexattr(const char *path, const char *name)
+{
+    return syscall(__NR_removexattr, path, name);
+}
+
+int lremovexattr(const char *path, const char *name)
+{
+    return syscall(__NR_lremovexattr, path, name);
+}
+#endif
+
 #endif
