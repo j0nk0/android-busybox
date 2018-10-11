@@ -1683,9 +1683,15 @@ static void close_all_HFILE_list(void)
 		 * It is disastrous if we share memory with a vforked parent.
 		 * I'm not sure we never come here after vfork.
 		 * Therefore just close fd, nothing more.
+		 *
+		 * ">" instead of ">=": we don't close fd#0,
+		 * interactive shell uses hfopen(NULL) as stdin input
+		 * which has fl->fd == 0, but fd#0 gets redirected in pipes.
+		 * If we'd close it here, then e.g. interactive "set | sort"
+		 * with NOFORKed sort, would have sort's input fd closed.
 		 */
-		/*hfclose(fl); - unsafe */
-		if (fl->fd >= 0)
+		if (fl->fd > 0)
+			/*hfclose(fl); - unsafe */
 			close(fl->fd);
 		fl = fl->next_hfile;
 	}
@@ -2391,6 +2397,12 @@ static int set_local_var(char *str, unsigned flags)
 	return 0;
 }
 
+static void FAST_FUNC set_local_var_from_halves(const char *name, const char *val)
+{
+	char *var = xasprintf("%s=%s", name, val);
+	set_local_var(var, /*flag:*/ 0);
+}
+
 /* Used at startup and after each cd */
 static void set_pwd_var(unsigned flag)
 {
@@ -2434,15 +2446,6 @@ static int unset_local_var_len(const char *name, int name_len)
 static int unset_local_var(const char *name)
 {
 	return unset_local_var_len(name, strlen(name));
-}
-#endif
-
-#if BASH_HOSTNAME_VAR || ENABLE_FEATURE_SH_MATH || ENABLE_HUSH_READ || ENABLE_HUSH_GETOPTS \
- || (ENABLE_HUSH_INTERACTIVE && ENABLE_FEATURE_EDITING_FANCY_PROMPT)
-static void FAST_FUNC set_local_var_from_halves(const char *name, const char *val)
-{
-	char *var = xasprintf("%s=%s", name, val);
-	set_local_var(var, /*flag:*/ 0);
 }
 #endif
 
@@ -3147,6 +3150,41 @@ static int o_get_last_ptr(o_string *o, int n)
 
 	return ((int)(uintptr_t)list[n-1]) + string_start;
 }
+
+/*
+ * Globbing routines.
+ *
+ * Most words in commands need to be globbed, even ones which are
+ * (single or double) quoted. This stems from the possiblity of
+ * constructs like "abc"* and 'abc'* - these should be globbed.
+ * Having a different code path for fully-quoted strings ("abc",
+ * 'abc') would only help performance-wise, but we still need
+ * code for partially-quoted strings.
+ *
+ * Unfortunately, if we want to match bash and ash behavior in all cases,
+ * the logic can't be "shell-syntax argument is first transformed
+ * to a string, then globbed, and if globbing does not match anything,
+ * it is used verbatim". Here are two examples where it fails:
+ *
+ * 	echo 'b\*'?
+ *
+ * The globbing can't be avoided (because of '?' at the end).
+ * The glob pattern is: b\\\*? - IOW, both \ and * are literals
+ * and are glob-escaped. If this does not match, bash/ash print b\*?
+ * - IOW: they "unbackslash" the glob pattern.
+ * Now, look at this:
+ *
+ * 	v='\\\*'; echo b$v?
+ *
+ * The glob pattern is the same here: b\\\*? - the unquoted $v expansion
+ * should be used as glob pattern with no changes. However, if glob
+ * does not match, bash/ash print b\\\*? - NOT THE SAME as first example!
+ *
+ * ash implements this by having an encoded representation of the word
+ * to glob, which IS NOT THE SAME as the glob pattern - it has more data.
+ * Glob pattern is derived from it. If glob fails, the decision what result
+ * should be is made using that encoded representation. Not glob pattern.
+ */
 
 #if ENABLE_HUSH_BRACE_EXPANSION
 /* There in a GNU extension, GLOB_BRACE, but it is not usable:
@@ -4930,6 +4968,15 @@ static int parse_dollar(o_string *as_string,
 					end_ch = '}' * 0x100 + '/';
 				}
 				o_addchr(dest, ch);
+				/* The pattern can't be empty.
+				 * IOW: if the first char after "${v//" is a slash,
+				 * it does not terminate the pattern - it's the first char of the pattern:
+				 *  v=/dev/ram; echo ${v////-}  prints -dev-ram (pattern is "/")
+				 *  v=/dev/ram; echo ${v///r/-} prints /dev-am  (pattern is "/r")
+				 */
+				if (i_peek(input) == '/') {
+					o_addchr(dest, i_getch(input));
+				}
  again:
 				if (!BB_MMU)
 					pos = dest->length;
@@ -9839,6 +9886,10 @@ int hush_main(int argc, char **argv)
 		uname(&uts);
 		set_local_var_from_halves("HOSTNAME", uts.nodename);
 	}
+#endif
+	/* IFS is not inherited from the parent environment */
+	set_local_var_from_halves("IFS", defifs);
+
 	/* bash also exports SHLVL and _,
 	 * and sets (but doesn't export) the following variables:
 	 * BASH=/bin/bash
@@ -9869,10 +9920,8 @@ int hush_main(int argc, char **argv)
 	 * TERM=dumb
 	 * OPTERR=1
 	 * OPTIND=1
-	 * IFS=$' \t\n'
 	 * PS4='+ '
 	 */
-#endif
 
 #if ENABLE_HUSH_LINENO_VAR
 	if (ENABLE_HUSH_LINENO_VAR) {
@@ -10486,40 +10535,29 @@ static int FAST_FUNC builtin_type(char **argv)
 static int FAST_FUNC builtin_read(char **argv)
 {
 	const char *r;
-	char *opt_n = NULL;
-	char *opt_p = NULL;
-	char *opt_t = NULL;
-	char *opt_u = NULL;
-	char *opt_d = NULL; /* optimized out if !BASH */
-	const char *ifs;
-	int read_flags;
+	struct builtin_read_params params;
+
+	memset(&params, 0, sizeof(params));
 
 	/* "!": do not abort on errors.
 	 * Option string must start with "sr" to match BUILTIN_READ_xxx
 	 */
-	read_flags = getopt32(argv,
+	params.read_flags = getopt32(argv,
 #if BASH_READ_D
-		"!srn:p:t:u:d:", &opt_n, &opt_p, &opt_t, &opt_u, &opt_d
+		"!srn:p:t:u:d:", &params.opt_n, &params.opt_p, &params.opt_t, &params.opt_u, &params.opt_d
 #else
-		"!srn:p:t:u:", &opt_n, &opt_p, &opt_t, &opt_u
+		"!srn:p:t:u:", &params.opt_n, &params.opt_p, &params.opt_t, &params.opt_u
 #endif
 	);
-	if (read_flags == (uint32_t)-1)
+	if ((uint32_t)params.read_flags == (uint32_t)-1)
 		return EXIT_FAILURE;
 	argv += optind;
-	ifs = get_local_var_value("IFS"); /* can be NULL */
+	params.argv = argv;
+	params.setvar = set_local_var_from_halves;
+	params.ifs = get_local_var_value("IFS"); /* can be NULL */
 
  again:
-	r = shell_builtin_read(set_local_var_from_halves,
-		argv,
-		ifs,
-		read_flags,
-		opt_n,
-		opt_p,
-		opt_t,
-		opt_u,
-		opt_d
-	);
+	r = shell_builtin_read(&params);
 
 	if ((uintptr_t)r == 1 && errno == EINTR) {
 		unsigned sig = check_and_run_traps();

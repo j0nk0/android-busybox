@@ -152,7 +152,7 @@
 
 #define INITIAL_SAMPLES    4    /* how many samples do we want for init */
 #define MIN_FREQHOLD      12    /* adjust offset, but not freq in this many first adjustments */
-#define BAD_DELAY_GROWTH   4    /* drop packet if its delay grew by more than this */
+#define BAD_DELAY_GROWTH   4    /* drop packet if its delay grew by more than this factor */
 
 #define RETRY_INTERVAL    32    /* on send/recv error, retry in N secs (need to be power of 2) */
 #define NOREPLY_INTERVAL 512    /* sent, but got no reply: cap next query by this many seconds */
@@ -1118,20 +1118,25 @@ fit(peer_t *p, double rd)
 {
 	if ((p->reachable_bits & (p->reachable_bits-1)) == 0) {
 		/* One or zero bits in reachable_bits */
-		VERB4 bb_error_msg("peer %s unfit for selection: unreachable", p->p_dotted);
+		VERB4 bb_error_msg("peer %s unfit for selection: "
+				"unreachable", p->p_dotted);
 		return 0;
 	}
 #if 0 /* we filter out such packets earlier */
 	if ((p->lastpkt_status & LI_ALARM) == LI_ALARM
 	 || p->lastpkt_stratum >= MAXSTRAT
 	) {
-		VERB4 bb_error_msg("peer %s unfit for selection: bad status/stratum", p->p_dotted);
+		VERB4 bb_error_msg("peer %s unfit for selection: "
+				"bad status/stratum", p->p_dotted);
 		return 0;
 	}
 #endif
 	/* rd is root_distance(p) */
 	if (rd > MAXDIST + FREQ_TOLERANCE * (1 << G.poll_exp)) {
-		VERB4 bb_error_msg("peer %s unfit for selection: root distance too high", p->p_dotted);
+		VERB3 bb_error_msg("peer %s unfit for selection: "
+			"root distance %f too high, jitter:%f",
+			p->p_dotted, rd, p->filter_jitter
+		);
 		return 0;
 	}
 //TODO
@@ -1821,7 +1826,7 @@ update_local_clock(peer_t *p)
 	VERB2 bb_error_msg("update from:%s offset:%+f delay:%f jitter:%f clock drift:%+.3fppm tc:%d",
 			p->p_dotted,
 			offset,
-			p->lastpkt_delay,
+			p->p_raw_delay,
 			G.discipline_jitter,
 			(double)tmx.freq / 65536,
 			(int)tmx.constant
@@ -1978,6 +1983,21 @@ recv_and_process_peer_pkt(peer_t *p)
 	T2 = lfp_to_d(msg.m_rectime);
 	T3 = lfp_to_d(msg.m_xmttime);
 	T4 = G.cur_time;
+	delay = (T4 - T1) - (T3 - T2);
+
+	/*
+	 * If this packet's delay is much bigger than the last one,
+	 * it's better to just ignore it than use its much less precise value.
+	 */
+	prev_delay = p->p_raw_delay;
+	p->p_raw_delay = (delay < 0 ? 0.0 : delay);
+	if (p->reachable_bits
+	 && delay > prev_delay * BAD_DELAY_GROWTH
+	 && delay > 1.0 / (8 * 1024) /* larger than ~0.000122 */
+	) {
+		bb_error_msg("reply from %s: delay %f is too high, ignoring", p->p_dotted, delay);
+		goto pick_normal_interval;
+	}
 
 	/* The delay calculation is a special case. In cases where the
 	 * server and client clocks are running at different rates and
@@ -1985,20 +2005,8 @@ recv_and_process_peer_pkt(peer_t *p)
 	 * order to avoid violating the Principle of Least Astonishment,
 	 * the delay is clamped not less than the system precision.
 	 */
-	delay = (T4 - T1) - (T3 - T2);
 	if (delay < G_precision_sec)
 		delay = G_precision_sec;
-	/*
-	 * If this packet's delay is much bigger than the last one,
-	 * it's better to just ignore it than use its much less precise value.
-	 */
-	prev_delay = p->p_raw_delay;
-	p->p_raw_delay = delay;
-	if (p->reachable_bits && delay > prev_delay * BAD_DELAY_GROWTH) {
-		bb_error_msg("reply from %s: delay %f is too high, ignoring", p->p_dotted, delay);
-		goto pick_normal_interval;
-	}
-
 	p->lastpkt_delay = delay;
 	p->lastpkt_recv_time = T4;
 	VERB6 bb_error_msg("%s->lastpkt_recv_time=%f", p->p_dotted, p->lastpkt_recv_time);
@@ -2026,7 +2034,7 @@ recv_and_process_peer_pkt(peer_t *p)
 		bb_error_msg("reply from %s: offset:%+f delay:%f status:0x%02x strat:%d refid:0x%08x rootdelay:%f reach:0x%02x",
 			p->p_dotted,
 			offset,
-			p->lastpkt_delay,
+			p->p_raw_delay,
 			p->lastpkt_status,
 			p->lastpkt_stratum,
 			p->lastpkt_refid,

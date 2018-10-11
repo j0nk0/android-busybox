@@ -3,10 +3,31 @@
 
 #include <android/api-level.h>
 
+<<<<<<< HEAD
+=======
+#if __ANDROID_API__ < 14
+# error "Android versions before 4.0 (API 14) are not supported"
+#endif
+
+// sanity check
+#if defined(__PIE__)
+# if __ANDROID_API__ < 16
+# error "Android versions before 4.1 (API 16) do not support PIE, please disable it"
+# endif
+#else
+# if __ANDROID_API__ >= 21
+# error "Android versions from 5.0 (API 21) require PIE, please enable it"
+# elif __ANDROID_API__ >= 16
+# warning "Android version from 4.1 (API 16) support PIE, consider enabling it"
+# endif
+#endif
+
+>>>>>>> upstream/master
 #include <sys/wait.h>
 #define wait3(status, options, rusage) wait4(-1, status, options, rusage)
 
 // syscalls
+<<<<<<< HEAD
 extern int sethostname(const char *name, size_t len);
 extern int pivot_root(const char *new_root, const char *put_old);
 extern int stime(const time_t *t);
@@ -17,10 +38,23 @@ extern ssize_t readahead(int fd, off64_t offset, size_t count);
 #define MNTOPT_NOAUTO       "noauto"    /* Do not auto mount.  */
 extern int addmntent(FILE *fp, const struct mntent *mnt);
 extern char *hasmntopt (const struct mntent *mnt, const char *opt);
+=======
+int sethostname(const char *name, size_t len);
+int pivot_root(const char *new_root, const char *put_old);
+int stime(const time_t *t);
+pid_t getsid(pid_t pid);
+ssize_t readahead(int fd, off64_t offset, size_t count);
+
+#include <mntent.h>
+#define MNTOPT_NOAUTO       "noauto"    /* Do not auto mount.  */
+int addmntent(FILE *fp, const struct mntent *mnt);
+char *hasmntopt (const struct mntent *mnt, const char *opt);
+>>>>>>> upstream/master
 
 #if __ANDROID_API__ < 21
 // bionic does not define stubs as weak
 #define getmntent android_getmntent
+<<<<<<< HEAD
 extern struct mntent *getmntent(FILE *fp);
 extern struct mntent *getmntent_r(FILE *fp, struct mntent *mnt, char *buf, int buflen);
 extern FILE *setmntent(const char *filename, const char *type);
@@ -44,13 +78,36 @@ extern int getlogin_r(char *name, size_t size);
 #if __ANDROID_API__ < 12
 #include <net/if_ether.h>
 extern struct ether_addr *ether_aton_r(const char *asc, struct ether_addr *addr);
+=======
+struct mntent *getmntent(FILE *fp);
+struct mntent *getmntent_r(FILE *fp, struct mntent *mnt, char *buf, int buflen);
+FILE *setmntent(const char *filename, const char *type);
+int endmntent(FILE *fp);
+
+#include <termios.h>
+int cfsetspeed (struct termios *termios_p, speed_t speed);
+int tcdrain(int fd);
+#endif
+
+// unistd.h
+int getlogin_r(char *name, size_t size);
+
+#if __ANDROID_API__ < 12
+#include <net/if_ether.h>
+struct ether_addr *ether_aton_r(const char *asc, struct ether_addr *addr);
+>>>>>>> upstream/master
 #endif
 
 // sys/swap.h
 #define SWAP_FLAG_PREFER        0x8000
 #define SWAP_FLAG_PRIO_MASK     0x7fff
+<<<<<<< HEAD
 extern int swapon(const char *path, int swapflags);
 extern int swapoff(const char *path);
+=======
+int swapon(const char *path, int swapflags);
+int swapoff(const char *path);
+>>>>>>> upstream/master
 
 // sys/timex.h
 struct timex
@@ -84,7 +141,11 @@ struct timex
   int  :32; int  :32; int  :32;
 };
 
+<<<<<<< HEAD
 extern int adjtimex(struct timex *buf);
+=======
+int adjtimex(struct timex *buf);
+>>>>>>> upstream/master
 
 #define ADJ_OFFSET              0x0001 /* time offset */
 #define ADJ_FREQUENCY           0x0002 /* frequency offset */
@@ -142,4 +203,18 @@ extern int adjtimex(struct timex *buf);
 #define SCHED_BATCH 3
 #endif
 
+<<<<<<< HEAD
+=======
+// sys/xattr.h
+#if __ANDROID_API__ < 16
+int setxattr(const char *path, const char *name, const void *value, size_t size, int flags);
+int lsetxattr(const char *path, const char *name, const void *value, size_t size, int flags);
+int removexattr(const char *path, const char *name);
+int lremovexattr(const char *path, const char *name);
+#endif
+
+// avoid in6_ifreq struct redefinition
+#define _LINUX_IN6_H
+
+>>>>>>> upstream/master
 #endif

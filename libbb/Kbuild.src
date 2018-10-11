@@ -113,7 +113,10 @@ lib-y += xreadlink.o
 lib-y += xrealloc_vector.o
 # android
 lib-y += android.o
+<<<<<<< HEAD
 lib-y += cfsetspeed.o
+=======
+>>>>>>> upstream/master
 
 lib-$(CONFIG_PLATFORM_LINUX) += match_fstype.o
 
